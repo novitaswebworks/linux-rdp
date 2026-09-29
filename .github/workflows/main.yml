@@ -1,4 +1,4 @@
-name: linux-rdp
+name: linux-cli-server
 
 on:
   workflow_dispatch:
@@ -7,95 +7,54 @@ on:
       - main
 
 jobs:
-  secure-rdp:
+  cli-server:
     runs-on: ubuntu-latest
     timeout-minutes: 350
 
     steps:
-      - name: Install Desktop Environment & Software Suite
+      - name: Maximize Disk Space (~180-200 GB Free)
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h /
+
+          # Remove heavy pre-installed toolsets not needed for a clean server
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune -a --force 2>/dev/null || true
+
+          echo ""
+          echo "=== Disk space after cleanup ==="
+          df -h /
+
+      - name: Install Essential CLI Tools
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            xfce4 \
-            xfce4-goodies \
-            xrdp \
-            dbus-x11 \
-            xorgxrdp \
             curl \
             wget \
+            git \
+            htop \
+            tmux \
+            screen \
+            neofetch \
             net-tools \
             p7zip-full \
             unzip \
-            libnotify-bin \
-            firefox
+            build-essential
 
-          # 1. Allow any user to run Xorg
-          sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config 2>/dev/null || true
-          echo "allowed_users=anybody" | sudo tee -a /etc/X11/Xwrapper.config
-
-          # 2. Prevent Polkit colord popups from locking the screen
-          sudo mkdir -p /etc/polkit-1/localauthority/50-local.d/
-          printf "[Allow Colord all Users]\nIdentity=unix-user:*\nAction=org.freedesktop.color-manager.*\nResultAny=no\nResultInactive=no\nResultActive=yes\n" | sudo tee /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla
-
-          # 3. Configure XRDP for smooth performance (24-bit color, high quality)
-          sudo sed -i 's/max_bpp=32/max_bpp=24/' /etc/xrdp/xrdp.ini 2>/dev/null || true
-          sudo sed -i 's/xserverbpp=24/xserverbpp=24/' /etc/xrdp/xrdp.ini 2>/dev/null || true
-
-          # 4. Overwrite startwm.sh using base64 decoding (completely avoids YAML heredoc issues)
-          echo "IyEvYmluL3NoCmV4cG9ydCBYREdfQ1VSUkVOVF9ERVNLUFRPUF1YUkNFCmV4cG9ydCBYREdfQ09ORklHX0RJUlM9Ii9ldGMveGRnIgpleHBvcnQgWERHX0RBVEFfRElSUz0iL3Vzci9zaGFyZS94ZmNlNDovdXNyL2xvY2FsL3NoYXJlOi91c3Ivc2hhcmUiCmV4ZWMgZGJ1cy1ydW4tc2Vzc2lvbiAtLSB4ZmNlNC1zZXNzaW9uCg==" | base64 -d | sudo tee /etc/xrdp/startwm.sh
-          sudo chmod +x /etc/xrdp/startwm.sh
-
-          sudo adduser xrdp ssl-cert
-          sudo systemctl enable xrdp
-          sudo systemctl restart xrdp
-
-      - name: Install Google Chrome & Telegram Desktop
-        run: |
-          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb
-          sudo apt-get install -y /tmp/chrome.deb || sudo apt-get -f install -y
-          rm -f /tmp/chrome.deb
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y telegram-desktop || true
-
-      - name: Create RDP User with Secure Credentials
-        run: |
-          PASSWORD="${{ secrets.RDP_PASSWORD }}"
-          if [ -z "$PASSWORD" ]; then
-            PASSWORD="MR.English2008"
-          fi
-          USER_NAME="RDP"
-
-          if ! id "$USER_NAME" &>/dev/null; then
-            sudo useradd -m -s /bin/bash "$USER_NAME"
-          fi
-
-          echo "$USER_NAME:$PASSWORD" | sudo chpasswd
-          sudo usermod -aG sudo "$USER_NAME"
-
-          # Create clean .xsession script using base64 decode
-          echo "IyEvYmluL3NoCmV4cG9ydCBYREdfQ1VSUkVOVF9ERVNLUFRPUF1YUkNFCmV4cG9ydCBYREdfQ09ORklHX0RJUlM9Ii9ldGMveGRnIgpleHBvcnQgWERHX0RBVEFfRElSUz0iL3Vzci9zaGFyZS94ZmNlNDovdXNyL2xvY2FsL3NoYXJlOi91c3Ivc2hhcmUiCmV4ZWMgZGJ1cy1ydW4tc2Vzc2lvbiAtLSB4ZmNlNC1zZXNzaW9uCg==" | base64 -d | sudo tee /home/$USER_NAME/.xsession
-          sudo chown $USER_NAME:$USER_NAME /home/$USER_NAME/.xsession
-          sudo chmod +x /home/$USER_NAME/.xsession
-
-          # Create Desktop shortcuts
-          DESKTOP_DIR="/home/$USER_NAME/Desktop"
-          sudo mkdir -p "$DESKTOP_DIR"
-          sudo cp /usr/share/applications/google-chrome.desktop "$DESKTOP_DIR/" 2>/dev/null || true
-          sudo cp /usr/share/applications/telegramdesktop.desktop "$DESKTOP_DIR/" 2>/dev/null || true
-          sudo chmod +x "$DESKTOP_DIR"/*.desktop 2>/dev/null || true
-          sudo chown -R $USER_NAME:$USER_NAME "/home/$USER_NAME"
-
-          echo "RDP_USER=$USER_NAME" >> $GITHUB_ENV
-          echo "RDP_PASS=$PASSWORD" >> $GITHUB_ENV
-
-      - name: Install & Configure Tailscale
+      - name: Install & Configure Tailscale with SSH
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
 
-      - name: Establish Tailscale Connection
-        run: |
+          # Start Tailscale with Tailscale SSH enabled
           sudo tailscale up \
             --authkey="${{ secrets.TAILSCALE_AUTHKEY }}" \
-            --hostname="gh-runner-linux-$GITHUB_RUN_ID" \
+            --hostname="gh-cli-server-$GITHUB_RUN_ID" \
+            --ssh \
             --accept-routes \
             --reset
 
@@ -109,36 +68,35 @@ jobs:
           done
 
           if [ -z "$TS_IP" ]; then
-            echo "::error::Tailscale IP not assigned. Make sure TAILSCALE_AUTHKEY is added to GitHub repository secrets."
+            echo "::error::Tailscale IP not assigned. Make sure TAILSCALE_AUTHKEY is added to GitHub secrets."
             exit 1
           fi
 
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
-      - name: Verify RDP Accessibility
-        run: |
-          echo "Tailscale IP: $TAILSCALE_IP"
-          if nc -z -w5 127.0.0.1 3389; then
-            echo "TCP connectivity to RDP port 3389 successful!"
-          else
-            echo "::error::TCP connection to RDP port 3389 failed"
-            exit 1
-          fi
-
-      - name: Keep Runner Alive & Display Connection Info
+      - name: Keep Server Alive & Print Connection Guide
         run: |
           echo ""
-          echo "==================== RDP ACCESS ===================="
-          echo " Address  : $TAILSCALE_IP:3389"
-          echo " Username : $RDP_USER"
-          echo " Password : $RDP_PASS"
-          echo " Session  : Xorg (default in XRDP)"
-          echo " Installed: Chrome, Firefox, Telegram, 7-Zip, XFCE4"
-          echo "===================================================="
+          echo "============================================================"
+          echo "           🚀 HIGH-PERFORMANCE CLI SERVER READY             "
+          echo "============================================================"
+          echo " Tailscale IP : $TAILSCALE_IP"
+          echo " Machine Host : gh-cli-server-$GITHUB_RUN_ID"
+          echo ""
+          echo " CONNECT FROM YOUR MAC TERMINAL:"
+          echo " 👉 Option 1 (Tailscale SSH - Instant, no password):"
+          echo "    tailscale ssh runner@$TAILSCALE_IP"
+          echo ""
+          echo " 👉 Option 2 (Standard SSH):"
+          echo "    ssh runner@$TAILSCALE_IP"
+          echo ""
+          echo " Specs        : 4 vCPU | 16 GB RAM | ~180-200 GB SSD"
+          echo " Session Limit: 350 minutes (~5.8 hours)"
+          echo "============================================================"
           echo ""
 
           START_TIME=$(date +%s)
-          MAX_SECONDS=20400
+          MAX_SECONDS=20400 # 340 minutes
 
           while true; do
             CURRENT_TIME=$(date +%s)
@@ -150,6 +108,6 @@ jobs:
               break
             fi
 
-            echo "[$(date)] RDP Active - $REMAINING mins remaining | Tailscale IP: $TAILSCALE_IP"
+            echo "[$(date)] Server Online | Remaining: $REMAINING mins | IP: $TAILSCALE_IP"
             sleep 300
           done
