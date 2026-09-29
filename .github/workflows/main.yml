@@ -17,7 +17,6 @@ jobs:
           echo "=== Disk space before cleanup ==="
           df -h /
 
-          # Remove heavy pre-installed toolsets not needed for a clean server
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
@@ -29,6 +28,19 @@ jobs:
           echo ""
           echo "=== Disk space after cleanup ==="
           df -h /
+
+      - name: Configure SSH Keepalive & Network Tuning
+        run: |
+          # 1. Prevent SSH timeout & idle disconnects
+          sudo mkdir -p /etc/ssh/sshd_config.d/
+          printf "ClientAliveInterval 30\nClientAliveCountMax 120\nTCPKeepAlive yes\n" | sudo tee /etc/ssh/sshd_config.d/99-keepalive.conf
+
+          # Restart OpenSSH socket
+          sudo systemctl restart ssh.socket || sudo systemctl restart ssh || true
+
+          # 2. Network TCP BBR and buffer tuning (reduces relay latency)
+          sudo sysctl -w net.core.default_qdisc=fq 2>/dev/null || true
+          sudo sysctl -w net.ipv4.tcp_congestion_control=bbr 2>/dev/null || true
 
       - name: Install Essential CLI Tools
         run: |
@@ -83,15 +95,10 @@ jobs:
           echo " Tailscale IP : $TAILSCALE_IP"
           echo " Machine Host : gh-cli-server-$GITHUB_RUN_ID"
           echo ""
-          echo " CONNECT FROM YOUR MAC TERMINAL:"
-          echo " 👉 Option 1 (Tailscale SSH - Instant, no password):"
-          echo "    tailscale ssh runner@$TAILSCALE_IP"
+          echo " RECOMMENDED SSH COMMAND (WITH ANTI-TIMEOUT KEEPALIVE):"
+          echo " 👉 ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=60 runner@$TAILSCALE_IP"
           echo ""
-          echo " 👉 Option 2 (Standard SSH):"
-          echo "    ssh runner@$TAILSCALE_IP"
-          echo ""
-          echo " Specs        : 4 vCPU | 16 GB RAM | ~180-200 GB SSD"
-          echo " Session Limit: 350 minutes (~5.8 hours)"
+          echo " SPECS: 4 vCPU | 16 GB RAM | ~180-200 GB SSD"
           echo "============================================================"
           echo ""
 
