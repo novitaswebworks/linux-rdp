@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Install Desktop Environment and XRDP
+      - name: Install Desktop Environment & Software Suite
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -22,24 +22,45 @@ jobs:
             dbus-x11 \
             xorgxrdp \
             curl \
-            net-tools
+            wget \
+            net-tools \
+            p7zip-full \
+            unzip \
+            libnotify-bin \
+            firefox
 
-          # Allow any user to run Xorg
+          # 1. Allow any user to run Xorg
           sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config 2>/dev/null || true
           echo "allowed_users=anybody" | sudo tee -a /etc/X11/Xwrapper.config
 
-          # Prevent Polkit colord prompts
+          # 2. Prevent Polkit colord popups from locking the screen
           sudo mkdir -p /etc/polkit-1/localauthority/50-local.d/
           printf "[Allow Colord all Users]\nIdentity=unix-user:*\nAction=org.freedesktop.color-manager.*\nResultAny=no\nResultInactive=no\nResultActive=yes\n" | sudo tee /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla
 
-          # Configure XRDP service
+          # 3. Configure XRDP for smooth performance (24-bit color, high quality)
+          sudo sed -i 's/max_bpp=32/max_bpp=24/' /etc/xrdp/xrdp.ini 2>/dev/null || true
+          sudo sed -i 's/xserverbpp=24/xserverbpp=24/' /etc/xrdp/xrdp.ini 2>/dev/null || true
+
           sudo adduser xrdp ssl-cert
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
 
-      - name: Create RDP User
+      - name: Install Google Chrome & Telegram Desktop
         run: |
-          PASSWORD="MR.English2008"
+          # Install Google Chrome
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb
+          sudo apt-get install -y /tmp/chrome.deb || sudo apt-get -f install -y
+          rm -f /tmp/chrome.deb
+
+          # Install Telegram Desktop
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y telegram-desktop || true
+
+      - name: Create RDP User with Secure Credentials
+        run: |
+          PASSWORD="${{ secrets.RDP_PASSWORD }}"
+          if [ -z "$PASSWORD" ]; then
+            PASSWORD="MR.English2008"
+          fi
           USER_NAME="RDP"
 
           if ! id "$USER_NAME" &>/dev/null; then
@@ -54,10 +75,18 @@ jobs:
           sudo chown $USER_NAME:$USER_NAME /home/$USER_NAME/.xsession
           sudo chmod +x /home/$USER_NAME/.xsession
 
+          # Create Desktop shortcuts for easy access
+          DESKTOP_DIR="/home/$USER_NAME/Desktop"
+          sudo mkdir -p "$DESKTOP_DIR"
+          sudo cp /usr/share/applications/google-chrome.desktop "$DESKTOP_DIR/" 2>/dev/null || true
+          sudo cp /usr/share/applications/telegramdesktop.desktop "$DESKTOP_DIR/" 2>/dev/null || true
+          sudo chmod +x "$DESKTOP_DIR"/*.desktop 2>/dev/null || true
+          sudo chown -R $USER_NAME:$USER_NAME "/home/$USER_NAME"
+
           echo "RDP_USER=$USER_NAME" >> $GITHUB_ENV
           echo "RDP_PASS=$PASSWORD" >> $GITHUB_ENV
 
-      - name: Install Tailscale
+      - name: Install & Configure Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
 
@@ -79,7 +108,7 @@ jobs:
           done
 
           if [ -z "$TS_IP" ]; then
-            echo "::error::Tailscale IP not assigned. Please ensure TAILSCALE_AUTHKEY is added in Repository Secrets."
+            echo "::error::Tailscale IP not assigned. Make sure TAILSCALE_AUTHKEY is added to GitHub repository secrets."
             exit 1
           fi
 
@@ -95,7 +124,7 @@ jobs:
             exit 1
           fi
 
-      - name: Keep Runner Alive
+      - name: Keep Runner Alive & Display Connection Info
         run: |
           echo ""
           echo "==================== RDP ACCESS ===================="
@@ -103,10 +132,24 @@ jobs:
           echo " Username : $RDP_USER"
           echo " Password : $RDP_PASS"
           echo " Session  : Xorg (default in XRDP)"
+          echo " Installed: Chrome, Firefox, Telegram, 7-Zip, XFCE4"
           echo "===================================================="
           echo ""
 
+          # Countdown timer loop (notifies in console & maintains connection)
+          START_TIME=$(date +%s)
+          MAX_SECONDS=20400 # 340 minutes
+
           while true; do
-            echo "[$(date)] RDP Active - Connected on Tailscale IP: $TAILSCALE_IP"
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+            REMAINING=$(( (MAX_SECONDS - ELAPSED) / 60 ))
+
+            if [ "$REMAINING" -le 0 ]; then
+              echo "Session timeout reached. Exiting."
+              break
+            fi
+
+            echo "[$(date)] RDP Active - $REMAINING mins remaining | Tailscale IP: $TAILSCALE_IP"
             sleep 300
           done
