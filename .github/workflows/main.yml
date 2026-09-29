@@ -41,24 +41,8 @@ jobs:
           sudo sed -i 's/max_bpp=32/max_bpp=24/' /etc/xrdp/xrdp.ini 2>/dev/null || true
           sudo sed -i 's/xserverbpp=24/xserverbpp=24/' /etc/xrdp/xrdp.ini 2>/dev/null || true
 
-          # 4. Configure global XRDP startwm.sh directly to start dbus and XFCE cleanly
-          sudo tee /etc/xrdp/startwm.sh << 'EOF'
-#!/bin/sh
-if [ -r /etc/default/locale ]; then
-  . /etc/default/locale
-  export LANG LANGUAGE
-fi
-
-export XDG_CURRENT_DESKTOP="XFCE"
-export XDG_DATA_DIRS="/usr/share/xfce4:/usr/local/share:/usr/share"
-export XDG_CONFIG_DIRS="/etc/xdg"
-
-if [ -f /etc/X11/Xsession ]; then
-  exec dbus-run-session -- xfce4-session
-else
-  exec startxfce4
-fi
-EOF
+          # 4. Overwrite startwm.sh using base64 decoding (completely avoids YAML heredoc issues)
+          echo "IyEvYmluL3NoCmV4cG9ydCBYREdfQ1VSUkVOVF9ERVNLUFRPUF1YUkNFCmV4cG9ydCBYREdfQ09ORklHX0RJUlM9Ii9ldGMveGRnIgpleHBvcnQgWERHX0RBVEFfRElSUz0iL3Vzci9zaGFyZS94ZmNlNDovdXNyL2xvY2FsL3NoYXJlOi91c3Ivc2hhcmUiCmV4ZWMgZGJ1cy1ydW4tc2Vzc2lvbiAtLSB4ZmNlNC1zZXNzaW9uCg==" | base64 -d | sudo tee /etc/xrdp/startwm.sh
           sudo chmod +x /etc/xrdp/startwm.sh
 
           sudo adduser xrdp ssl-cert
@@ -87,14 +71,8 @@ EOF
           echo "$USER_NAME:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo "$USER_NAME"
 
-          # User .xsession using dbus-run-session and proper XDG environment
-          sudo tee /home/$USER_NAME/.xsession << 'EOF'
-#!/bin/sh
-export XDG_CURRENT_DESKTOP="XFCE"
-export XDG_CONFIG_DIRS="/etc/xdg"
-export XDG_DATA_DIRS="/usr/share/xfce4:/usr/local/share:/usr/share"
-exec dbus-run-session -- xfce4-session
-EOF
+          # Create clean .xsession script using base64 decode
+          echo "IyEvYmluL3NoCmV4cG9ydCBYREdfQ1VSUkVOVF9ERVNLUFRPUF1YUkNFCmV4cG9ydCBYREdfQ09ORklHX0RJUlM9Ii9ldGMveGRnIgpleHBvcnQgWERHX0RBVEFfRElSUz0iL3Vzci9zaGFyZS94ZmNlNDovdXNyL2xvY2FsL3NoYXJlOi91c3Ivc2hhcmUiCmV4ZWMgZGJ1cy1ydW4tc2Vzc2lvbiAtLSB4ZmNlNC1zZXNzaW9uCg==" | base64 -d | sudo tee /home/$USER_NAME/.xsession
           sudo chown $USER_NAME:$USER_NAME /home/$USER_NAME/.xsession
           sudo chmod +x /home/$USER_NAME/.xsession
 
