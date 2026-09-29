@@ -1,7 +1,10 @@
-name: linux + tailscale + Download script
+name: linux-rdp
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   secure-rdp:
@@ -9,7 +12,7 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Install Desktop Environment & XRDP
+      - name: Install Desktop Environment and XRDP
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -21,47 +24,33 @@ jobs:
             curl \
             net-tools
 
-          # 1. Allow any user to run Xorg server (fixes black screen/crash on XRDP)
-          sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config 2>/dev/null || echo "allowed_users=anybody" | sudo tee /etc/X11/Xwrapper.config
+          # Allow any user to run Xorg
+          sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config 2>/dev/null || true
+          echo "allowed_users=anybody" | sudo tee -a /etc/X11/Xwrapper.config
 
-          # 2. Prevent Polkit color/system popups that freeze headless XRDP sessions
+          # Prevent Polkit colord prompts
           sudo mkdir -p /etc/polkit-1/localauthority/50-local.d/
-          sudo tee /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla << 'EOF'
-[Allow Colord all Users]
-Identity=unix-user:*
-Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
-ResultAny=no
-ResultInactive=no
-ResultActive=yes
-EOF
+          printf "[Allow Colord all Users]\nIdentity=unix-user:*\nAction=org.freedesktop.color-manager.*\nResultAny=no\nResultInactive=no\nResultActive=yes\n" | sudo tee /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla
 
-          # 3. Add xrdp user to ssl-cert
+          # Configure XRDP service
           sudo adduser xrdp ssl-cert
-
-          # 4. Restart XRDP
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
 
-      - name: Create RDP User with Fixed Password
+      - name: Create RDP User
         run: |
           PASSWORD="MR.English2008"
           USER_NAME="RDP"
 
-          # Create user RDP if it does not exist
           if ! id "$USER_NAME" &>/dev/null; then
             sudo useradd -m -s /bin/bash "$USER_NAME"
           fi
 
-          # Set password and assign sudo permissions
           echo "$USER_NAME:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo "$USER_NAME"
 
-          # 5. Clean session script for XFCE without dbus conflicts
-          sudo tee /home/$USER_NAME/.xsession << 'EOF'
-unset DBUS_SESSION_BUS_ADDRESS
-unset XDG_RUNTIME_DIR
-exec startxfce4
-EOF
+          # User session configuration
+          printf "unset DBUS_SESSION_BUS_ADDRESS\nunset XDG_RUNTIME_DIR\nexec startxfce4\n" | sudo tee /home/$USER_NAME/.xsession
           sudo chown $USER_NAME:$USER_NAME /home/$USER_NAME/.xsession
           sudo chmod +x /home/$USER_NAME/.xsession
 
@@ -74,16 +63,14 @@ EOF
 
       - name: Establish Tailscale Connection
         run: |
-          # Use authkey non-interactively
           sudo tailscale up \
             --authkey="${{ secrets.TAILSCALE_AUTHKEY }}" \
             --hostname="gh-runner-linux-$GITHUB_RUN_ID" \
             --accept-routes \
             --reset
 
-          # Wait for Tailscale to assign an IPv4
           TS_IP=""
-          for i in {1..15}; do
+          for i in {1..20}; do
             TS_IP=$(tailscale ip -4 || true)
             if [ -n "$TS_IP" ]; then
               break
@@ -92,7 +79,7 @@ EOF
           done
 
           if [ -z "$TS_IP" ]; then
-            echo "::error::Tailscale IP not assigned. Make sure TAILSCALE_AUTHKEY secret is valid."
+            echo "::error::Tailscale IP not assigned. Please ensure TAILSCALE_AUTHKEY is added in Repository Secrets."
             exit 1
           fi
 
@@ -101,8 +88,6 @@ EOF
       - name: Verify RDP Accessibility
         run: |
           echo "Tailscale IP: $TAILSCALE_IP"
-
-          # Test connectivity against local port 3389
           if nc -z -w5 127.0.0.1 3389; then
             echo "TCP connectivity to RDP port 3389 successful!"
           else
@@ -110,7 +95,7 @@ EOF
             exit 1
           fi
 
-      - name: Maintain Connection + Watch RDP User
+      - name: Keep Runner Alive
         run: |
           echo ""
           echo "==================== RDP ACCESS ===================="
@@ -121,15 +106,7 @@ EOF
           echo "===================================================="
           echo ""
 
-          # Download and execute custom startup script if available
-          DOWNLOAD_URL="https://gitlab.com/MR.English2008/pcme_rdp/-/raw/main/Downloads.bat"
-          STARTUP_DIR="/home/$RDP_USER/Desktop"
-          sudo mkdir -p "$STARTUP_DIR"
-          sudo curl -fsSL "$DOWNLOAD_URL" -o "$STARTUP_DIR/Downloads.bat" || true
-          sudo chown -R $RDP_USER:$RDP_USER "/home/$RDP_USER"
-
-          # Keep runner alive
           while true; do
-            echo "[$(date)] RDP Active - Runner connected on Tailscale IP: $TAILSCALE_IP"
+            echo "[$(date)] RDP Active - Connected on Tailscale IP: $TAILSCALE_IP"
             sleep 300
           done
