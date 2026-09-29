@@ -41,18 +41,35 @@ jobs:
           sudo sed -i 's/max_bpp=32/max_bpp=24/' /etc/xrdp/xrdp.ini 2>/dev/null || true
           sudo sed -i 's/xserverbpp=24/xserverbpp=24/' /etc/xrdp/xrdp.ini 2>/dev/null || true
 
+          # 4. Configure global XRDP startwm.sh directly to start dbus and XFCE cleanly
+          sudo tee /etc/xrdp/startwm.sh << 'EOF'
+#!/bin/sh
+if [ -r /etc/default/locale ]; then
+  . /etc/default/locale
+  export LANG LANGUAGE
+fi
+
+export XDG_CURRENT_DESKTOP="XFCE"
+export XDG_DATA_DIRS="/usr/share/xfce4:/usr/local/share:/usr/share"
+export XDG_CONFIG_DIRS="/etc/xdg"
+
+if [ -f /etc/X11/Xsession ]; then
+  exec dbus-run-session -- xfce4-session
+else
+  exec startxfce4
+fi
+EOF
+          sudo chmod +x /etc/xrdp/startwm.sh
+
           sudo adduser xrdp ssl-cert
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
 
       - name: Install Google Chrome & Telegram Desktop
         run: |
-          # Install Google Chrome
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb
           sudo apt-get install -y /tmp/chrome.deb || sudo apt-get -f install -y
           rm -f /tmp/chrome.deb
-
-          # Install Telegram Desktop
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y telegram-desktop || true
 
       - name: Create RDP User with Secure Credentials
@@ -70,12 +87,18 @@ jobs:
           echo "$USER_NAME:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo "$USER_NAME"
 
-          # User session configuration
-          printf "unset DBUS_SESSION_BUS_ADDRESS\nunset XDG_RUNTIME_DIR\nexec startxfce4\n" | sudo tee /home/$USER_NAME/.xsession
+          # User .xsession using dbus-run-session and proper XDG environment
+          sudo tee /home/$USER_NAME/.xsession << 'EOF'
+#!/bin/sh
+export XDG_CURRENT_DESKTOP="XFCE"
+export XDG_CONFIG_DIRS="/etc/xdg"
+export XDG_DATA_DIRS="/usr/share/xfce4:/usr/local/share:/usr/share"
+exec dbus-run-session -- xfce4-session
+EOF
           sudo chown $USER_NAME:$USER_NAME /home/$USER_NAME/.xsession
           sudo chmod +x /home/$USER_NAME/.xsession
 
-          # Create Desktop shortcuts for easy access
+          # Create Desktop shortcuts
           DESKTOP_DIR="/home/$USER_NAME/Desktop"
           sudo mkdir -p "$DESKTOP_DIR"
           sudo cp /usr/share/applications/google-chrome.desktop "$DESKTOP_DIR/" 2>/dev/null || true
@@ -136,9 +159,8 @@ jobs:
           echo "===================================================="
           echo ""
 
-          # Countdown timer loop (notifies in console & maintains connection)
           START_TIME=$(date +%s)
-          MAX_SECONDS=20400 # 340 minutes
+          MAX_SECONDS=20400
 
           while true; do
             CURRENT_TIME=$(date +%s)
