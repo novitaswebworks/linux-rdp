@@ -21,11 +21,24 @@ jobs:
             curl \
             net-tools
 
-          # Configure XRDP default session to XFCE
-          echo "xfce4-session" | sudo tee /etc/skel/.xsession
+          # 1. Allow any user to run Xorg server (fixes black screen/crash on XRDP)
+          sudo sed -i 's/allowed_users=console/allowed_users=anybody/' /etc/X11/Xwrapper.config 2>/dev/null || echo "allowed_users=anybody" | sudo tee /etc/X11/Xwrapper.config
+
+          # 2. Prevent Polkit color/system popups that freeze headless XRDP sessions
+          sudo mkdir -p /etc/polkit-1/localauthority/50-local.d/
+          sudo tee /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla << 'EOF'
+[Allow Colord all Users]
+Identity=unix-user:*
+Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
+ResultAny=no
+ResultInactive=no
+ResultActive=yes
+EOF
+
+          # 3. Add xrdp user to ssl-cert
           sudo adduser xrdp ssl-cert
 
-          # Start and enable XRDP service on port 3389
+          # 4. Restart XRDP
           sudo systemctl enable xrdp
           sudo systemctl restart xrdp
 
@@ -43,11 +56,15 @@ jobs:
           echo "$USER_NAME:$PASSWORD" | sudo chpasswd
           sudo usermod -aG sudo "$USER_NAME"
 
-          # Configure user's X session
-          echo "xfce4-session" | sudo tee /home/$USER_NAME/.xsession
+          # 5. Clean session script for XFCE without dbus conflicts
+          sudo tee /home/$USER_NAME/.xsession << 'EOF'
+unset DBUS_SESSION_BUS_ADDRESS
+unset XDG_RUNTIME_DIR
+exec startxfce4
+EOF
           sudo chown $USER_NAME:$USER_NAME /home/$USER_NAME/.xsession
+          sudo chmod +x /home/$USER_NAME/.xsession
 
-          echo "RDP_CREDS=User: $USER_NAME | Password: $PASSWORD" >> $GITHUB_ENV
           echo "RDP_USER=$USER_NAME" >> $GITHUB_ENV
           echo "RDP_PASS=$PASSWORD" >> $GITHUB_ENV
 
@@ -57,24 +74,25 @@ jobs:
 
       - name: Establish Tailscale Connection
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
+          # Use authkey non-interactively
           sudo tailscale up \
-            --authkey=${{ secrets.TAILSCALE_AUTHKEY }} \
-            --hostname=gh-runner-linux-$GITHUB_RUN_ID \
-            --accept-routes
+            --authkey="${{ secrets.TAILSCALE_AUTHKEY }}" \
+            --hostname="gh-runner-linux-$GITHUB_RUN_ID" \
+            --accept-routes \
+            --reset
 
           # Wait for Tailscale to assign an IPv4
           TS_IP=""
-          for i in {1..10}; do
+          for i in {1..15}; do
             TS_IP=$(tailscale ip -4 || true)
             if [ -n "$TS_IP" ]; then
               break
             fi
-            sleep 5
+            sleep 3
           done
 
           if [ -z "$TS_IP" ]; then
-            echo "::error::Tailscale IP not assigned. Exiting."
+            echo "::error::Tailscale IP not assigned. Make sure TAILSCALE_AUTHKEY secret is valid."
             exit 1
           fi
 
@@ -95,11 +113,12 @@ jobs:
       - name: Maintain Connection + Watch RDP User
         run: |
           echo ""
-          echo "=== RDP ACCESS ==="
-          echo "Address: $TAILSCALE_IP:3389"
-          echo "Username: $RDP_USER"
-          echo "Password: $RDP_PASS"
-          echo "=================="
+          echo "==================== RDP ACCESS ===================="
+          echo " Address  : $TAILSCALE_IP:3389"
+          echo " Username : $RDP_USER"
+          echo " Password : $RDP_PASS"
+          echo " Session  : Xorg (default in XRDP)"
+          echo "===================================================="
           echo ""
 
           # Download and execute custom startup script if available
@@ -111,6 +130,6 @@ jobs:
 
           # Keep runner alive
           while true; do
-            echo "[$(date)] RDP Active - Use Ctrl+C in workflow to terminate"
+            echo "[$(date)] RDP Active - Runner connected on Tailscale IP: $TAILSCALE_IP"
             sleep 300
           done
